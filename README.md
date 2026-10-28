@@ -21,11 +21,15 @@ build it yourself (see below).
 2. The first time, Windows Firewall asks about network access: allow it on **private** networks.
    ShareKM uses TCP port 24800 (the link) and UDP port 24801 (finding the other PC). If you
    dismissed the prompt, allow `ShareKM.exe` inbound on private networks in Windows Defender Firewall.
-3. On either PC, double-click the tray icon to open **Settings**. The other PC shows up under
-   "Other computers running ShareKM" within a few seconds: pick it and press **Connect**. You can
+3. **Pair the two PCs.** Settings opens by itself the first time. Under **Security**, press
+   **Generate** on one PC (or type a passphrase of your own, at least 8 characters), press
+   **Apply**, then enter the same passphrase on the other PC and press **Apply** there too.
+   Without a passphrase ShareKM does not connect at all.
+4. On either PC, double-click the tray icon to open **Settings**. The other PC shows up under
+   **Other computers** within a few seconds: pick it and press **Connect**. You can
    also type its IP address or computer name, or use the tray menu: **Connect to >**.
    Connecting from one side is enough, and the choice is remembered for next time.
-4. When the icon turns green the two are connected.
+5. When the icon turns green the two are connected, and Security shows **Encrypted (AES-256-GCM)**.
 
 Tray icon: grey = not connected, green = connected and controlling this PC,
 orange = this PC's keyboard and mouse go to the other PC, blue = the other PC is controlling this one.
@@ -46,30 +50,87 @@ orange = this PC's keyboard and mouse go to the other PC, blue = the other PC is
 - To change the hotkey, open Settings, press **Record** and then the key you want (Pause, F-keys,
   Insert, ...). Esc cancels. It applies at once. Ctrl, Shift, Alt and Windows keys can't be used.
 - Copy text on either PC and paste it on the other. This works whichever PC you are controlling.
+- **Mouse update rate** (Settings > Performance) sets how often pointer movement is sent to the
+  other PC while you control it: 60 to 1000 Hz, default 200 Hz. Movement in between is added up
+  and sent in one message; clicks, wheel and keys always go out after the movement before them.
+  Higher is smoother but uses more Wi-Fi and CPU. It only matters on the PC you are controlling
+  from, and it applies at once.
 - **Disconnect** in Settings drops the link and stops this PC accepting it until you press
   **Connect** or restart ShareKM.
-- **Start with Windows** in the tray menu adds ShareKM to your user's startup programs.
+- **Start with Windows** (tray menu, or Settings > Controls) starts ShareKM when you sign in.
+
+### Run as administrator
+
+Windows does not let a normal program see or type into windows that run as administrator (admin
+terminals, Task Manager, installers): while one of them is in front, ShareKM can neither read your
+keyboard and mouse there (on the PC you control from) nor type into it (on the other PC). Turn on
+**Run as administrator** in Settings > Controls **on both PCs** to fix this.
+
+- Turning it on shows a warning first (see [Security](#security)): an elevated ShareKM lets anyone
+  with your passphrase, or malware on a paired PC, type into admin windows. Use it only on a network
+  you trust, and only when you need it.
+- Windows then asks for permission once (UAC), and ShareKM restarts as administrator. If you say
+  No, nothing changes. Turning it off restarts ShareKM normally.
+- With **Start with Windows** on, administrator mode uses a scheduled task named "ShareKM"
+  (at sign-in, highest privileges, allowed on battery, no time limit) instead of the normal startup
+  entry, so it starts elevated without a prompt each time. Turning administrator mode off goes back
+  to the normal startup entry and removes the task.
+- If administrator mode is on but ShareKM was started normally, it does not ask again by itself:
+  Settings shows "Not running as administrator yet" with a **Restart as administrator** button.
+- Even as administrator it cannot control the UAC prompt itself, the lock or sign-in screen, or
+  Ctrl+Alt+Del. That would need a signed system service, which ShareKM is not.
+
+The Settings window follows the Windows light or dark theme (and switches live when you change
+it), uses your Windows accent colour, and can be used with the keyboard (Tab, Enter, Esc, and the
+underlined Alt shortcuts).
 
 ## Config
 
 `%APPDATA%\ShareKM\config.json`, created on first run:
 
 ```json
-{ "Peer": "", "Port": 24800, "Hotkey": "Scroll" }
+{ "Peer": "", "Port": 24800, "Hotkey": "Scroll", "MouseRateHz": 200, "PassphraseProtected": "AQAAANCM...", "RunAsAdmin": false }
 ```
 
 `Peer` is the computer this PC dials (set by Connect). `Hotkey` is a .NET `Keys` name (for
-example `Scroll`, `Pause`, `F12`). Both PCs must use the same `Port`. Restart ShareKM after
-editing the file by hand.
+example `Scroll`, `Pause`, `F12`). Both PCs must use the same `Port`. `MouseRateHz` is the mouse
+update rate (60 to 1000; a missing or invalid value means 200). `PassphraseProtected` is the
+shared passphrase encrypted with Windows DPAPI for your Windows user, so it can only be read by your
+account on this PC. Set it in Settings. If you write a plain `"Passphrase": "..."` into the file
+instead, ShareKM reads it once and replaces it with the protected form. `RunAsAdmin` is the
+administrator mode (`true` or `false`; anything else means `false`); change it in Settings so the
+restart and the startup task are handled. Restart ShareKM after editing the file by hand.
+
+## Security
+
+- **Pairing:** only a PC that knows the same passphrase can connect. On every connection both PCs
+  prove they know it without sending it: the passphrase is stretched with PBKDF2-HMAC-SHA256
+  (600,000 rounds), fresh session keys come from HKDF-SHA256 and random values from both sides, and
+  each side checks the other's HMAC-SHA256 proof.
+- **Encryption:** after that, everything on the link (keystrokes, mouse, clipboard text, control
+  messages) is encrypted and checked with AES-256-GCM. A frame that was changed, replayed, dropped
+  or reordered ends the connection.
+- **Not protected:** the discovery broadcasts on UDP 24801 are plain text and contain the computer
+  name and port, so others on the network can see that ShareKM runs. Which PCs talk to each other,
+  and when, is also visible.
+- **Choose a strong passphrase:** someone who records a handshake on your network, or tricks your
+  PC into connecting to theirs, can try to guess the passphrase offline. Generate makes an 80-bit
+  random one, which cannot be guessed; short or common passphrases can.
+- Failed attempts are slowed down: a PC that keeps failing is refused for a while, and ShareKM
+  only retries every 10 seconds after a mismatch.
+- **1.1 cannot connect to 1.0.** Update both PCs. ShareKM tells you when the other PC runs an older
+  version.
+- **Administrator mode raises the stakes:** with [Run as administrator](#run-as-administrator) on,
+  whoever has your passphrase (or controls a paired PC) can also type into admin windows on this
+  PC. Turn it on only when you need it.
 
 ## Limitations
 
-- **No encryption or pairing.** Anyone who can reach TCP port 24800 on either PC can type and
-  click on it and read what you copy. Anyone on the network also sees each PC's name through the
-  UDP beacons. Only use it on a network you trust, and keep the firewall rules limited to private
-  networks.
-- Windows does not let it control UAC prompts, the lock or sign-in screen, or windows of programs
-  running as administrator, unless ShareKM itself runs as administrator.
+- **Security depends on the passphrase.** Anyone who has it, or controls one of the paired PCs, can
+  type and click on the other one and read what you copy. Keep the firewall rules limited to
+  private networks. See [Security](#security) above.
+- Windows that run as administrator need [Run as administrator](#run-as-administrator) on
+  both PCs. The UAC prompt itself and the lock or sign-in screen cannot be controlled at all.
 - Ctrl+Alt+Del cannot be forwarded. It always goes to the PC the keyboard is plugged into.
 - Clipboard sharing covers text only (up to about 1 million characters), not files or images.
 - Mouse movement is sent as relative motion, so pointer speed and acceleration depend on both PCs'

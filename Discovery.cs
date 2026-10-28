@@ -38,13 +38,14 @@ sealed class Discovery
         return true;
     }
 
-    public void Start(int tcpPort, int udpPort = DefaultPort)
+    // bind: null = all interfaces (the app); tests pass IPAddress.Loopback.
+    public void Start(int tcpPort, int udpPort = DefaultPort, IPAddress? bind = null)
     {
         var udp = new UdpClient(AddressFamily.InterNetwork);
         udp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
         udp.EnableBroadcast = true;
         try { udp.Client.IOControl(-1744830452, [0, 0, 0, 0], null); } catch { } // SIO_UDP_CONNRESET off
-        try { udp.Client.Bind(new IPEndPoint(IPAddress.Any, udpPort)); }
+        try { udp.Client.Bind(new IPEndPoint(bind ?? IPAddress.Any, udpPort)); }
         catch (Exception e) { Error?.Invoke($"Discovery cannot use UDP port {udpPort}: {e.Message}"); }
         _ = Task.Run(() => ReceiveLoop(udp));
         _ = Task.Run(() => BeaconLoop(udp, tcpPort, udpPort));

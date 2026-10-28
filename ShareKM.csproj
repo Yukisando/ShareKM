@@ -13,12 +13,12 @@
     <ApplicationIcon>Assets\ShareKM.ico</ApplicationIcon>
 
     <Product>ShareKM</Product>
-    <AssemblyTitle>Share one keyboard and mouse between Windows PCs on your network</AssemblyTitle>
+    <AssemblyTitle>ShareKM</AssemblyTitle>
     <Description>Share one keyboard and mouse between Windows PCs on your network</Description>
-    <Company>ShareKM contributors</Company>
-    <Authors>ShareKM contributors</Authors>
-    <Copyright>ShareKM contributors</Copyright>
-    <Version>1.0.0</Version>
+    <Company>ColdSnap</Company>
+    <Authors>ColdSnap</Authors>
+    <Copyright>Copyright © ColdSnap</Copyright>
+    <Version>1.1.0</Version>
 
     <!-- No PDB, no local paths baked into the binary -->
     <DebugType>none</DebugType>

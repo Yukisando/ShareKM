@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Text.Json;
-using Microsoft.Win32;
+using System.Text.Json.Serialization;
 
 namespace ShareKM;
 
@@ -9,6 +9,13 @@ sealed class Config
     public string Peer { get; set; } = "";
     public int Port { get; set; } = 24800;
     public string Hotkey { get; set; } = "Scroll";
+    public int MouseRateHz { get; set; } = MotionPump.DefaultHz;
+    // DPAPI-protected (current Windows user) shared passphrase, base64. See Pairing.
+    public string PassphraseProtected { get; set; } = "";
+    // A plain "Passphrase" typed into the file by hand is read once, then saved protected instead.
+    [JsonIgnore] public string PlainPassphrase { get; set; } = "";
+    // Run as administrator (opt-in). See Elevation.
+    public bool RunAsAdmin { get; set; }
 
     public static readonly string FilePath = Environment.GetEnvironmentVariable("SHAREKM_CONFIG") is { Length: > 0 } f ? f
         : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ShareKM", "config.json");
@@ -18,13 +25,46 @@ sealed class Config
     {
         try
         {
-            if (File.Exists(FilePath)) return JsonSerializer.Deserialize<Config>(File.ReadAllText(FilePath)) ?? new();
+            if (File.Exists(FilePath)) return Parse(File.ReadAllText(FilePath));
         }
         catch { }
         var c = new Config();
         if (!File.Exists(FilePath)) c.Save();
         return c;
     }
+
+    // Lenient: a missing, mistyped or out-of-range value falls back to its default instead of losing the whole file.
+    public static Config Parse(string json)
+    {
+        var c = new Config();
+        try
+        {
+            using var doc = JsonDocument.Parse(json, new JsonDocumentOptions { AllowTrailingCommas = true, CommentHandling = JsonCommentHandling.Skip });
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return c;
+            foreach (var p in doc.RootElement.EnumerateObject())
+            {
+                var v = p.Value;
+                switch (p.Name.ToLowerInvariant())
+                {
+                    case "peer" when v.ValueKind == JsonValueKind.String: c.Peer = v.GetString()!; break;
+                    case "hotkey" when v.ValueKind == JsonValueKind.String: c.Hotkey = v.GetString()!; break;
+                    case "port" when Int(v) is > 0 and < 65536: c.Port = Int(v); break;
+                    case "mouseratehz": c.MouseRateHz = MotionPump.Clamp(Int(v)); break;
+                    case "passphraseprotected" when v.ValueKind == JsonValueKind.String: c.PassphraseProtected = v.GetString()!; break;
+                    case "passphrase" when v.ValueKind == JsonValueKind.String: c.PlainPassphrase = v.GetString()!; break;
+                    case "runasadmin": c.RunAsAdmin = v.ValueKind == JsonValueKind.True
+                        || v.ValueKind == JsonValueKind.String && bool.TryParse(v.GetString(), out var b) && b
+                        || v.ValueKind == JsonValueKind.Number && Int(v) == 1; break;
+                }
+            }
+        }
+        catch (JsonException) { }
+        return c;
+    }
+
+    static int Int(JsonElement v) =>
+        v.ValueKind == JsonValueKind.Number && v.TryGetDouble(out var d) && Math.Abs(d) < int.MaxValue ? (int)Math.Round(d)
+        : v.ValueKind == JsonValueKind.String && int.TryParse(v.GetString(), out var i) ? i : 0;
 
     public void Save()
     {
@@ -39,9 +79,10 @@ sealed class Config
 
 // Hotkey rule, same on both PCs: if this PC is forwarding -> stop; if the other PC is controlling this one ->
 // tell it to stop (release); otherwise start forwarding. So the hotkey on either keyboard always ends a session.
-sealed class TrayApp : ApplicationContext
+enum SecurityState { NotPaired, Applying, Waiting, Encrypted, Mismatch, OldPeer, NewerPeer }
+
+sealed class TrayApp : ApplicationContext, ISettingsHost
 {
-    const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
     const int MaxClip = 1024 * 1024, VkEscape = 0x1B;
 
     readonly Config _cfg = Config.Load();
@@ -56,6 +97,8 @@ sealed class TrayApp : ApplicationContext
     readonly Dictionary<Color, Icon> _icons = [];
     readonly HashSet<(ushort vk, ushort scan, bool ext)> _keysDown = [];
     readonly HashSet<int> _buttonsDown = [];
+    readonly MotionPump _motion;
+    readonly System.Windows.Forms.Timer _saveLater = new() { Interval = 600 };
     IntPtr _kbHook, _mouseHook;
     Keys _hotkey;
     int _hotkeyVk, _swallowUpVk;
@@ -66,18 +109,19 @@ sealed class TrayApp : ApplicationContext
     SettingsForm? _settings;
     string? _lastText, _lastError;
 
-    public TrayApp(bool showSettings = false)
+    public TrayApp(bool showSettings = false, bool relaunched = false)
     {
         _hotkey = Enum.TryParse<Keys>(_cfg.Hotkey, true, out var k) && (k & Keys.KeyCode) != Keys.None
             ? k & Keys.KeyCode : Keys.Scroll;
         _hotkeyVk = (int)_hotkey;
+        _motion = new MotionPump(_link.SendMove) { RateHz = _cfg.MouseRateHz };
+        _saveLater.Tick += (_, _) => { _saveLater.Stop(); _cfg.Save(); };
 
         var menu = new ContextMenuStrip();
         _status = new ToolStripMenuItem("Not connected") { Enabled = false };
         _switch = new ToolStripMenuItem("", null, (_, _) => OnHotkey());
         _connectTo = new ToolStripMenuItem("Connect to");
-        _autostart = new ToolStripMenuItem("Start with Windows", null, (_, _) => SetAutostart(!_autostart!.Checked))
-            { Checked = IsAutostart() };
+        _autostart = new ToolStripMenuItem("Start with Windows", null, async (_, _) => await SetStartWithWindows(!_autostart!.Checked));
         menu.Items.AddRange([
             _status, new ToolStripSeparator(), _switch, _connectTo,
             new ToolStripMenuItem("Settings...", null, (_, _) => ShowSettings()),
@@ -102,27 +146,220 @@ sealed class TrayApp : ApplicationContext
         _link.Error += msg => _ui.Post(_ => ShowError(msg), null);
         _link.RemoteControlChanged += on => _ui.Post(_ => OnRemoteControl(on), null);
         _link.ReleaseRequested += () => _ui.Post(_ => OnReleaseRequested(), null);
+        _link.IssueChanged += issue => _ui.Post(_ => OnIssue(issue), null);
         _discovery.Error += msg => _ui.Post(_ => ShowError(msg), null);
+
+        bool unreadable = LoadPassphrase();
         UpdateUi();
-        _link.Start(_cfg.Port, _cfg.Peer);
-        _discovery.Start(_cfg.Port);
+        // SHAREKM_LISTEN (like SHAREKM_CONFIG): bind to one address only, e.g. 127.0.0.1 for local trials.
+        var bind = System.Net.IPAddress.TryParse(Environment.GetEnvironmentVariable("SHAREKM_LISTEN"), out var ip) ? ip : null;
+        _link.Start(_cfg.Port, _cfg.Peer, listenOn: bind);
+        _discovery.Start(_cfg.Port, bind: bind);
+        if (_passphrase.Length > 0) _ = UseKey(_passphrase);
 
         if (_kbHook == IntPtr.Zero || _mouseHook == IntPtr.Zero)
             Balloon("ShareKM", "Could not install the keyboard/mouse hooks; switching will not work.", ToolTipIcon.Error);
+        else if (_passphrase.Length == 0)
+        {
+            Balloon("Set a passphrase to connect", unreadable
+                ? "The saved passphrase could not be read on this PC. Enter it again in Settings."
+                : "Enter the same passphrase on both PCs in Settings > Security.");
+            showSettings = true;
+        }
+        else if (_cfg.RunAsAdmin && !Elevation.IsElevated && !relaunched)
+            Balloon("Not running as administrator", "Administrator mode is on, but ShareKM started without it. Open Settings to restart it as administrator.");
         else if (string.IsNullOrWhiteSpace(_cfg.Peer))
             Balloon("ShareKM is running", "Double-click the tray icon to pick the other computer.");
+        _ = InitAutostart();
         if (showSettings) ShowSettings();
     }
+
+    // ---- administrator mode and startup ----
+
+    bool _autostartOn, _relaunching;
+
+    // An elevated copy puts "Start with Windows" on the right mechanism (task when administrator mode is on).
+    async Task InitAutostart()
+    {
+        _autostartOn = await Task.Run(Autostart.IsEnabled);
+        if (_autostartOn && Elevation.IsElevated)
+        {
+            var err = await Task.Run(() => Autostart.Apply(Autostart.Plan(true, _cfg.RunAsAdmin), true));
+            if (err != null) ShowError(err);
+        }
+        UpdateUi();
+    }
+
+    public bool IsElevated => Elevation.IsElevated;
+    public bool RunAsAdmin => _cfg.RunAsAdmin;
+    public bool StartWithWindows => _autostartOn;
+    public bool Relaunching => _relaunching;
+
+    public async Task SetStartWithWindows(bool on)
+    {
+        var mech = Autostart.Plan(on, _cfg.RunAsAdmin && Elevation.IsElevated);
+        var err = await Task.Run(() => Autostart.Apply(mech, Elevation.IsElevated));
+        _autostartOn = await Task.Run(Autostart.IsEnabled);
+        UpdateUi();
+        if (err != null) ShowError(err);
+    }
+
+    // Called after the user confirmed the warning (turning on). Restarts ShareKM at the other elevation level
+    // when needed; on any failure this copy keeps running and the setting is put back.
+    public async Task SetRunAsAdmin(bool on)
+    {
+        if (_relaunching) return;
+        _cfg.RunAsAdmin = on;
+        _cfg.Save();
+        UpdateUi();
+        if (on == Elevation.IsElevated)
+        {
+            if (_autostartOn && on) await SetStartWithWindows(true); // already elevated: Run entry -> task
+            return;
+        }
+        if (!on && _autostartOn) await SetStartWithWindows(true); // still elevated: task -> Run entry, while we can
+        await Relaunch(elevated: on);
+    }
+
+    // Administrator mode is saved as on, but this copy is not elevated.
+    public Task RestartElevated() => _relaunching || Elevation.IsElevated ? Task.CompletedTask : Relaunch(elevated: true);
+
+    async Task Relaunch(bool elevated)
+    {
+        _relaunching = true;
+        UpdateUi();
+        try
+        {
+            var (result, error) = await Task.Run(() => elevated ? Elevation.StartElevated() : Elevation.StartUnelevated());
+            if (result == Elevation.StartResult.Started && await Elevation.WaitForOtherInstance(8000))
+            {
+                Quit(); // the new copy is waiting for our single-instance lock
+                return;
+            }
+            Elevation.ClearMarker();
+            if (elevated)
+            {
+                _cfg.RunAsAdmin = false;
+                _cfg.Save();
+            }
+            if (result == Elevation.StartResult.Cancelled)
+                Balloon("Administrator mode not turned on", "Windows did not get permission, so ShareKM keeps running normally.");
+            else
+                Balloon("ShareKM could not restart", (error ?? "The new copy did not start.") + " This copy keeps running.", ToolTipIcon.Warning);
+        }
+        finally
+        {
+            _relaunching = false;
+            UpdateUi();
+        }
+    }
+
+    // ---- pairing ----
+
+    string _passphrase = "";
+    bool _deriving;
+
+    // Returns true when a stored passphrase exists but cannot be decrypted (another Windows user or PC).
+    bool LoadPassphrase()
+    {
+        if (_cfg.PlainPassphrase.Length > 0)
+        {
+            _passphrase = Pairing.Normalize(_cfg.PlainPassphrase);
+            _cfg.PassphraseProtected = _passphrase.Length > 0 ? Pairing.Protect(_passphrase) : "";
+            _cfg.PlainPassphrase = "";
+            _cfg.Save();
+            return false;
+        }
+        _passphrase = Pairing.Unprotect(_cfg.PassphraseProtected) ?? "";
+        return _passphrase.Length == 0 && _cfg.PassphraseProtected.Length > 0;
+    }
+
+    async Task UseKey(string passphrase)
+    {
+        _deriving = true;
+        UpdateUi();
+        var key = await Task.Run(() => Pairing.DeriveMaster(passphrase)); // PBKDF2, ~0.5 s
+        if (passphrase != _passphrase) return; // superseded by a newer Apply
+        _deriving = false;
+        _link.SetKey(key);
+        UpdateUi();
+    }
+
+    public string Passphrase => _passphrase;
+
+    public SecurityState Security =>
+        _passphrase.Length == 0 ? SecurityState.NotPaired
+        : _deriving ? SecurityState.Applying
+        : _link.Connected ? SecurityState.Encrypted
+        : _link.Issue switch
+        {
+            LinkIssue.Mismatch => SecurityState.Mismatch,
+            LinkIssue.OldPeer => SecurityState.OldPeer,
+            LinkIssue.NewerPeer => SecurityState.NewerPeer,
+            _ => SecurityState.Waiting,
+        };
+
+    // Saves (protected) and re-keys: the current link drops and reconnects with the new key. Empty = unpair.
+    public async Task<string?> ApplyPassphrase(string text)
+    {
+        var p = Pairing.Normalize(text);
+        if (p.Length > 0 && p.Length < Pairing.MinLength)
+            return $"Use at least {Pairing.MinLength} characters (Generate makes a strong one).";
+        StopForwarding(false);
+        _passphrase = p;
+        _cfg.PassphraseProtected = p.Length > 0 ? Pairing.Protect(p) : "";
+        _cfg.Save();
+        _lastError = null;
+        if (p.Length == 0)
+        {
+            _deriving = false;
+            _link.SetKey(null);
+            UpdateUi();
+            return null;
+        }
+        await UseKey(p);
+        return null;
+    }
+
+    void OnIssue(LinkIssue issue)
+    {
+        UpdateUi();
+        switch (issue)
+        {
+            case LinkIssue.Mismatch:
+                Balloon("Passphrase mismatch", "Passphrase does not match (or the other PC is not ShareKM).", ToolTipIcon.Warning); break;
+            case LinkIssue.OldPeer:
+                Balloon("Update needed", "The other PC runs an older ShareKM. Update both PCs.", ToolTipIcon.Warning); break;
+            case LinkIssue.NewerPeer:
+                Balloon("Update needed", "The other PC runs a newer ShareKM. Update this PC.", ToolTipIcon.Warning); break;
+        }
+    }
+
+    public string ComputerName => Environment.MachineName;
+    public IReadOnlyList<string> LocalIps => [.. Discovery.LocalAddresses().Select(a => a.Ip.ToString())];
 
     // ---- used by the settings window ----
 
     public Keys Hotkey => _hotkey;
     public bool Connected => _link.Connected;
     public bool Paused => _link.Paused;
+    public bool Forwarding => _forwarding;
+    public bool RemoteControlling => _remoteControlling;
     public string Peer => _cfg.Peer;
     public string? PeerEndpoint => _link.PeerEndpoint;
     public IReadOnlyList<Discovery.Peer> Peers => _discovery.Peers;
     public string Status => StatusText();
+
+    public int MouseRateHz => _motion.RateHz;
+
+    // Applies at once (the sender reads the rate every period); the file write is debounced while a slider drags.
+    public void SetMouseRate(int hz)
+    {
+        _motion.RateHz = hz;
+        _cfg.MouseRateHz = _motion.RateHz;
+        _saveLater.Stop();
+        _saveLater.Start();
+    }
 
     public void SetHotkey(Keys key)
     {
@@ -197,6 +434,7 @@ sealed class TrayApp : ApplicationContext
         _forwarding = true;
         _mouseAt = Environment.TickCount64;
         _escSince = 0;
+        _motion.Start();
         _link.SendForwarding(true);
         UpdateUi();
         Balloon("Controlling the other computer", $"Press {KeyName(_hotkey)} on either keyboard to come back (or hold Esc 3 s).");
@@ -205,6 +443,7 @@ sealed class TrayApp : ApplicationContext
     void StopForwarding(bool notify)
     {
         if (!_forwarding) return;
+        _motion.Stop(); // sends any pending movement before the releases below
         foreach (var (vk, scan, ext) in _keysDown) _link.SendKey(vk, scan, ext, true);
         foreach (var b in _buttonsDown) _link.SendButton(b, false);
         _keysDown.Clear();
@@ -242,7 +481,7 @@ sealed class TrayApp : ApplicationContext
             _remoteControlling = false;
         }
         UpdateUi();
-        if (up) Balloon("Connected", $"Linked with {PeerLabel()}. Press {KeyName(_hotkey)} to switch.");
+        if (up) Balloon("Connected (encrypted)", $"Linked with {PeerLabel}. Press {KeyName(_hotkey)} to switch.");
         else Balloon("Disconnected", "Lost the link to the other computer.", ToolTipIcon.Warning);
     }
 
@@ -333,6 +572,7 @@ sealed class TrayApp : ApplicationContext
                     var key = ((ushort)k.vkCode, (ushort)k.scanCode, (k.flags & Native.LLKHF_EXTENDED) != 0);
                     if (down) _keysDown.Add(key);
                     else if (!_keysDown.Remove(key)) goto pass; // pressed before switching: release it here
+                    _motion.Flush();
                     _link.SendKey(key.Item1, key.Item2, key.Item3, !down);
                     return 1;
                 }
@@ -354,11 +594,12 @@ sealed class TrayApp : ApplicationContext
         {
             case Native.WM_MOUSEMOVE:
                 int dx = m.pt.x - _lock.x, dy = m.pt.y - _lock.y;
-                if (dx != 0 || dy != 0) _link.SendMove(dx, dy);
+                if (dx != 0 || dy != 0) _motion.Add(dx, dy);
                 Native.SetCursorPos(_lock.x, _lock.y);
                 break;
             case Native.WM_MOUSEWHEEL:
             case Native.WM_MOUSEHWHEEL:
+                _motion.Flush();
                 _link.SendWheel((short)(m.mouseData >> 16), msg == Native.WM_MOUSEHWHEEL);
                 break;
             default:
@@ -374,6 +615,7 @@ sealed class TrayApp : ApplicationContext
                 bool down = msg is Native.WM_LBUTTONDOWN or Native.WM_RBUTTONDOWN or Native.WM_MBUTTONDOWN or Native.WM_XBUTTONDOWN;
                 if (down) _buttonsDown.Add(id);
                 else if (!_buttonsDown.Remove(id)) return Native.CallNextHookEx(_mouseHook, code, wParam, lParam);
+                _motion.Flush();
                 _link.SendButton(id, down);
                 break;
         }
@@ -412,19 +654,28 @@ sealed class TrayApp : ApplicationContext
 
     // ---- tray ----
 
-    string PeerLabel()
+    public string PeerLabel
     {
-        var ip = _link.PeerEndpoint;
-        var name = _discovery.Peers.FirstOrDefault(p => p.Address.ToString() == ip)?.Name;
-        return name == null ? ip ?? "?" : $"{name} ({ip})";
+        get
+        {
+            var ip = _link.PeerEndpoint;
+            var name = _discovery.Peers.FirstOrDefault(p => p.Address.ToString() == ip)?.Name;
+            return name == null ? ip ?? "?" : $"{name} ({ip})";
+        }
     }
 
-    string StatusText() =>
-        _link.Paused ? "Disconnected"
-        : !_link.Connected ? "Not connected"
-        : _forwarding ? $"Controlling {PeerLabel()}"
-        : _remoteControlling ? $"Controlled by {PeerLabel()}"
-        : $"Connected to {PeerLabel()}";
+    string StatusText() => Security switch
+    {
+        SecurityState.NotPaired => "Set a passphrase to connect",
+        _ when _link.Paused => "Disconnected",
+        SecurityState.Applying => "Applying the passphrase",
+        SecurityState.Mismatch => "Passphrase mismatch",
+        SecurityState.OldPeer or SecurityState.NewerPeer => "Update ShareKM on both PCs",
+        _ when !_link.Connected => "Not connected",
+        _ when _forwarding => $"Controlling {PeerLabel}, encrypted",
+        _ when _remoteControlling => $"Controlled by {PeerLabel}, encrypted",
+        _ => $"Connected to {PeerLabel}, encrypted",
+    };
 
     void UpdateUi()
     {
@@ -438,7 +689,8 @@ sealed class TrayApp : ApplicationContext
             : _remoteControlling ? Color.DodgerBlue
             : Color.FromArgb(0x2E, 0xA8, 0x4A);
         _icon.Icon = DotIcon(color);
-        var tip = "ShareKM: " + status;
+        var tip = (Elevation.IsElevated ? "ShareKM (administrator): " : "ShareKM: ") + status;
+        _autostart.Checked = _autostartOn;
         _icon.Text = tip.Length > 63 ? tip[..63] : tip;
         _settings?.RefreshState();
     }
@@ -492,29 +744,13 @@ sealed class TrayApp : ApplicationContext
         Balloon("ShareKM", msg, ToolTipIcon.Error);
     }
 
-    static bool IsAutostart()
-    {
-        using var key = Registry.CurrentUser.OpenSubKey(RunKey);
-        return key?.GetValue("ShareKM") is string v && v.Trim('"').Equals(Environment.ProcessPath, StringComparison.OrdinalIgnoreCase);
-    }
-
-    void SetAutostart(bool on)
-    {
-        try
-        {
-            using var key = Registry.CurrentUser.CreateSubKey(RunKey);
-            if (on) key.SetValue("ShareKM", $"\"{Environment.ProcessPath}\"");
-            else key.DeleteValue("ShareKM", false);
-        }
-        catch (Exception e) { ShowError("Could not change auto-start: " + e.Message); }
-        _autostart.Checked = IsAutostart();
-    }
-
     public void Quit()
     {
         StopForwarding(false);
         if (_remoteControlling) _link.SendRelease();
         _watchdog.Stop();
+        if (_saveLater.Enabled) _cfg.Save();
+        _link.SetPaused(true); // closes the listener and the link before the next copy starts
         if (_kbHook != IntPtr.Zero) Native.UnhookWindowsHookEx(_kbHook);
         if (_mouseHook != IntPtr.Zero) Native.UnhookWindowsHookEx(_mouseHook);
         _kbHook = _mouseHook = IntPtr.Zero;

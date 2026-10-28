@@ -66,6 +66,27 @@ static class Native
     [DllImport("user32.dll")]
     public static extern bool RemoveClipboardFormatListener(IntPtr hwnd);
 
+    // Window theming
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+    [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)]
+    public static extern int SetWindowTheme(IntPtr hwnd, string? app, string? idList);
+
+    // Timing for the motion sender
+    public const uint CREATE_WAITABLE_TIMER_HIGH_RESOLUTION = 0x2, TIMER_ALL_ACCESS = 0x1F0003, INFINITE = 0xFFFFFFFF;
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr CreateWaitableTimerExW(IntPtr attrs, string? name, uint flags, uint access);
+    [DllImport("kernel32.dll")]
+    public static extern bool SetWaitableTimer(IntPtr timer, ref long due, int period, IntPtr fn, IntPtr arg, bool resume);
+    [DllImport("kernel32.dll")]
+    public static extern uint WaitForSingleObject(IntPtr handle, uint ms);
+    [DllImport("kernel32.dll")]
+    public static extern bool CloseHandle(IntPtr handle);
+    [DllImport("winmm.dll")]
+    public static extern uint timeBeginPeriod(uint ms);
+    [DllImport("winmm.dll")]
+    public static extern uint timeEndPeriod(uint ms);
+
     static void Send(INPUT i) => SendInput(1, [i], Marshal.SizeOf<INPUT>());
 
     static void Mouse(uint flags, int dx = 0, int dy = 0, uint data = 0) =>

@@ -454,3 +454,91 @@ sealed class PeerList : Panel
         Ui.FillRounded(e.Graphics, p.Control, focus ? p.Accent : p.ControlBorder, new RectangleF(0, 0, Width, Height), 4 * s, focus ? 2 * s : 1);
     }
 }
+
+// "Made with ♥ by Coldsnap": a small clickable card that opens a web page. The heart is drawn in red with
+// Segoe UI Symbol, since GDI text cannot render colour emoji.
+sealed class CreditBadge : Control
+{
+    const string Before = "Made with ", Heart = "♥", After = " by Coldsnap";
+    static readonly Color Red = Color.FromArgb(0xE8, 0x3A, 0x4C);
+    bool _hover, _press;
+    Font? _heartFont;
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)] public string Url { get; set; } = "";
+
+    public CreditBadge()
+    {
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
+                 ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
+        TabStop = true;
+        Cursor = Cursors.Hand;
+        AccessibleRole = AccessibleRole.Link;
+        AccessibleName = "Made with love by Coldsnap (opens coldsnap.fr)";
+        Padding = new Padding(12, 0, 12, 0);
+        MinimumSize = new Size(0, 32);
+        AutoSize = true;
+    }
+
+    Font HeartFont => _heartFont ??= new Font("Segoe UI Symbol", Font.Size, FontStyle.Regular, Font.Unit);
+
+    protected override void OnFontChanged(EventArgs e)
+    {
+        _heartFont?.Dispose();
+        _heartFont = null;
+        base.OnFontChanged(e);
+        if (AutoSize) Size = GetPreferredSize(Size.Empty);
+    }
+
+    const TextFormatFlags Flags = TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding | TextFormatFlags.VerticalCenter;
+
+    (int before, int heart, int after) Widths() => (
+        TextRenderer.MeasureText(Before, Font, Size.Empty, Flags).Width,
+        TextRenderer.MeasureText(Heart, HeartFont, Size.Empty, Flags).Width,
+        TextRenderer.MeasureText(After, Font, Size.Empty, Flags).Width);
+
+    public override Size GetPreferredSize(Size proposed)
+    {
+        var (a, b, c) = Widths();
+        int h = TextRenderer.MeasureText(Before, Font, Size.Empty, Flags).Height;
+        return new Size(a + b + c + Padding.Horizontal, Math.Max(h + 10, MinimumSize.Height));
+    }
+
+    void Open() { if (Url.Length > 0) Updater.OpenUrl(Url); }
+
+    protected override void OnClick(EventArgs e) { base.OnClick(e); Open(); }
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (e.KeyCode is Keys.Enter or Keys.Space) { Open(); e.Handled = true; }
+        base.OnKeyDown(e);
+    }
+    protected override void OnMouseEnter(EventArgs e) { _hover = true; Invalidate(); base.OnMouseEnter(e); }
+    protected override void OnMouseLeave(EventArgs e) { _hover = _press = false; Invalidate(); base.OnMouseLeave(e); }
+    protected override void OnMouseDown(MouseEventArgs e) { if (e.Button == MouseButtons.Left) { _press = true; Invalidate(); } base.OnMouseDown(e); }
+    protected override void OnMouseUp(MouseEventArgs e) { _press = false; Invalidate(); base.OnMouseUp(e); }
+    protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
+    protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var p = Theme.Current;
+        var g = e.Graphics;
+        float s = Ui.S(this);
+        var back = Ui.BackOf(this);
+        g.Clear(back);
+        var fill = _press ? p.ControlPressed : _hover ? p.ControlHover : p.Card;
+        Ui.FillRounded(g, fill, p.CardBorder, new RectangleF(0, 0, Width, Height), Height / 2f);
+        if (Focused && ShowFocusCues) Ui.FillRounded(g, Color.Transparent, p.Text, new RectangleF(0, 0, Width, Height), Height / 2f, 2 * s);
+        var (a, b, _) = Widths();
+        int x = Padding.Left;
+        var text = _hover ? p.Text : p.TextSecondary;
+        TextRenderer.DrawText(g, Before, Font, new Rectangle(x, 0, a, Height), text, fill, Flags);
+        TextRenderer.DrawText(g, Heart, HeartFont, new Rectangle(x + a, 0, b, Height), Red, fill, Flags);
+        TextRenderer.DrawText(g, After, Font, new Rectangle(x + a + b, 0, Width - x - a - b, Height), text, fill, Flags);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _heartFont?.Dispose();
+        base.Dispose(disposing);
+    }
+}

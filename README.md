@@ -84,6 +84,19 @@ The Settings window follows the Windows light or dark theme (and switches live w
 it), uses your Windows accent colour, and can be used with the keyboard (Tab, Enter, Esc, and the
 underlined Alt shortcuts).
 
+### Updates
+
+Settings > Updates shows your version. ShareKM checks GitHub for a newer release a few seconds after
+it starts and once a day, and shows a notification when there is one. **Check for updates** asks
+right away; **Update to x.y.z** downloads `ShareKM.exe` from the
+[latest release](https://github.com/Yukisando/ShareKM/releases/latest), checks its SHA-256 against
+the digest GitHub publishes, replaces the exe in place and restarts ShareKM (as administrator if
+it was). The previous exe is kept as `ShareKM.exe.old` until the next start. ShareKM needs write
+access to the folder the exe is in. Update both PCs.
+
+The only thing ShareKM sends to GitHub is the request for the latest release (with a `ShareKM/x.y.z`
+user agent).
+
 ## Config
 
 `%APPDATA%\ShareKM\config.json`, created on first run:

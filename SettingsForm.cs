@@ -33,6 +33,10 @@ interface ISettingsHost
     void ConnectTo(string address);
     void Disconnect();
     void Resume();
+    string AppVersion { get; }
+    UpdateInfo Updates { get; }
+    Task CheckForUpdates(bool quiet = false);
+    Task InstallUpdate();
 }
 
 sealed class SettingsForm : Form
@@ -43,8 +47,8 @@ sealed class SettingsForm : Form
 
     readonly ISettingsHost _app;
     readonly Pill _status = new(), _hotkey = new() { KeyCap = true }, _secStatus = new();
-    readonly Label _connHint, _rateValue, _secHint;
-    readonly ModernButton _pause, _connect, _record, _copy, _show, _apply;
+    readonly Label _connHint, _rateValue, _secHint, _updateHint;
+    readonly ModernButton _pause, _connect, _record, _copy, _show, _apply, _updateButton;
     readonly InputBox _pass = new();
     readonly Card _security = new();
     readonly ToggleSwitch _admin = new() { AccessibleName = "Run as administrator" }, _startup = new() { AccessibleName = "Start with Windows" };
@@ -58,7 +62,7 @@ sealed class SettingsForm : Form
     readonly TableLayoutPanel _root;
     readonly System.Windows.Forms.Timer _timer = new() { Interval = 1000 };
     readonly string _localIp;
-    bool _recording, _applying, _confirming;
+    bool _recording, _applying, _confirming, _loaded;
     string? _applyError;
 
     public SettingsForm(ISettingsHost app)
@@ -80,9 +84,15 @@ sealed class SettingsForm : Form
         _root.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _root.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
-        var header = Column();
-        header.Controls.Add(Lbl("ShareKM", Theme.Title, false, 0, new Padding(0, 0, 0, 2)));
-        header.Controls.Add(Lbl("Share one keyboard and mouse between your PCs.", Theme.Body, true, 0, new Padding(0, 0, 0, 0)));
+        var header = new TableLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 2, Margin = Padding.Empty, Dock = DockStyle.Fill };
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        var headerText = Column();
+        headerText.Controls.Add(Lbl("ShareKM", Theme.Title, false, 0, new Padding(0, 0, 0, 2)));
+        headerText.Controls.Add(Lbl("Share one keyboard and mouse between your PCs.", Theme.Body, true, 0, new Padding(0, 0, 0, 0)));
+        var credit = new CreditBadge { Url = "https://coldsnap.fr", Font = Theme.Caption, Anchor = AnchorStyles.Top | AnchorStyles.Right, Margin = new Padding(16, 6, 0, 0) };
+        header.Controls.Add(headerText, 0, 0);
+        header.Controls.Add(credit, 1, 0);
         _root.Controls.Add(header);
         _root.SetColumnSpan(header, 2);
 
@@ -194,8 +204,8 @@ sealed class SettingsForm : Form
         _admin.CheckedChanged += async (_, _) => await AdminToggled();
         controls.Controls.Add(adminTitle, 0, 2);
         controls.Controls.Add(_admin, 1, 2);
-        Span(controls, Lbl("Lets ShareKM see and control administrator windows such as admin terminals and Task Manager. " +
-            "Windows asks for permission once. Turn it on on both PCs. It still cannot control the UAC prompt, the lock screen or Ctrl+Alt+Del.",
+        Span(controls, Lbl("Lets ShareKM control administrator windows (admin terminals, Task Manager). Windows asks once. " +
+            "Turn it on on both PCs. The UAC prompt, lock screen and Ctrl+Alt+Del stay out of reach.",
             Theme.Caption, true, Inner, new Padding(0, 8, 0, 8)), 3);
         _adminStatus.Font = Theme.Caption;
         _adminStatus.MinimumSize = new Size(0, 24);
@@ -220,6 +230,19 @@ sealed class SettingsForm : Form
         Span(controls, _startupHint, 6);
         Section(right, "Controls", controls);
 
+        var updates = new Card();
+        var versionLabel = Lbl($"Version {_app.AppVersion}", Theme.Body, false, 0, Padding.Empty);
+        versionLabel.Anchor = AnchorStyles.Left;
+        _updateButton = MakeButton("Check for &updates", false, async (_, _) =>
+        {
+            if (_app.Updates.Available != null) await _app.InstallUpdate(); else await _app.CheckForUpdates();
+        });
+        updates.Controls.Add(versionLabel, 0, 0);
+        updates.Controls.Add(_updateButton, 1, 0);
+        _updateHint = Lbl("", Theme.Caption, true, Inner, new Padding(0, 8, 0, 0));
+        Span(updates, _updateHint, 1);
+        Section(right, "Updates", updates);
+
         var perf = new Card();
         var rateLabel = Lbl("Mouse update rate", Theme.Body, false, 0, Padding.Empty);
         rateLabel.Anchor = AnchorStyles.Left;
@@ -242,6 +265,7 @@ sealed class SettingsForm : Form
 
         _root.Controls.Add(left, 0, 1);
         _root.Controls.Add(right, 1, 1);
+        _root.SizeChanged += (_, _) => { if (_loaded) FitToContent(); }; // texts that grow or shrink later
         _scroller.Controls.Add(_root);
         Controls.Add(_scroller);
         AcceptButton = _connect;
@@ -338,6 +362,7 @@ sealed class SettingsForm : Form
     protected override void OnLoad(EventArgs e)
     {
         base.OnLoad(e);
+        _loaded = true;
         FitToContent();
         _timer.Start();
     }
@@ -348,13 +373,21 @@ sealed class SettingsForm : Form
         BeginInvoke(() => { ApplyTheme(); FitToContent(); });
     }
 
+    // Sized to the content, so it only scrolls (vertically) when the screen is too short for it. Runs again whenever
+    // the content changes size, and keeps the window on screen.
     void FitToContent()
     {
         var pref = _root.GetPreferredSize(Size.Empty);
         var area = Screen.FromControl(this).WorkingArea;
         int maxH = area.Height - (Height - ClientSize.Height) - 16;
-        int w = pref.Width + (pref.Height > maxH ? SystemInformation.VerticalScrollBarWidth : 0);
-        ClientSize = new Size(Math.Min(w, area.Width - 16), Math.Min(pref.Height, maxH));
+        bool scroll = pref.Height > maxH;
+        int w = pref.Width + (scroll ? SystemInformation.VerticalScrollBarWidth : 0);
+        _scroller.AutoScroll = scroll;
+        var size = new Size(Math.Min(w, area.Width - 16), Math.Min(pref.Height, maxH));
+        if (ClientSize == size) return;
+        ClientSize = size;
+        if (Bottom > area.Bottom) Top = Math.Max(area.Top, area.Bottom - Height);
+        if (Right > area.Right) Left = Math.Max(area.Left, area.Right - Width);
     }
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
@@ -505,6 +538,17 @@ sealed class SettingsForm : Form
             : _app.RunAsAdmin && _app.IsElevated ? "Starts as administrator when you sign in (scheduled task, no prompt)."
             : pending ? "Starts when you sign in, without administrator rights until you restart it as administrator."
             : "Starts when you sign in.";
+
+        var up = _app.Updates;
+        _updateButton.Text = up.Installing ? $"Updating... {up.Percent}%" : up.Checking ? "Checking..."
+            : up.Available is { } r ? $"&Update to {r.Version}" : "Check for &updates";
+        _updateButton.Primary = up.Available != null;
+        _updateButton.Enabled = !up.Installing && !up.Checking && !_app.Relaunching;
+        _updateButton.Invalidate();
+        _updateHint.Text = up.Error ?? (up.Installing ? "Downloading from GitHub. ShareKM restarts by itself."
+            : up.Available is { } a ? $"Version {a.Version} is out. ShareKM downloads it and restarts. Update both PCs."
+            : up.UpToDate ? "You have the latest version."
+            : "Updates come from the ShareKM releases on GitHub.");
 
         var current = _app.Connected ? _app.PeerEndpoint : null;
         var items = _app.Peers.Select(p => new PeerItem(p.Id, p.Name, p.Address.ToString(), p.Address.ToString() == current)).ToList();

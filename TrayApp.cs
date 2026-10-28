@@ -81,6 +81,8 @@ sealed class Config
 // tell it to stop (release); otherwise start forwarding. So the hotkey on either keyboard always ends a session.
 enum SecurityState { NotPaired, Applying, Waiting, Encrypted, Mismatch, OldPeer, NewerPeer }
 
+sealed record UpdateInfo(Updater.Release? Available, bool Checking, bool Installing, int Percent, bool UpToDate, string? Error);
+
 sealed class TrayApp : ApplicationContext, ISettingsHost
 {
     const int MaxClip = 1024 * 1024, VkEscape = 0x1B;
@@ -131,6 +133,7 @@ sealed class TrayApp : ApplicationContext, ISettingsHost
         menu.Opening += (_, _) => FillConnectMenu();
         _icon = new NotifyIcon { ContextMenuStrip = menu, Visible = true };
         _icon.DoubleClick += (_, _) => ShowSettings();
+        _icon.BalloonTipClicked += (_, _) => ShowSettings();
         _ui = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
 
         _clipWindow = new ClipWindow(OnLocalClipboard);
@@ -171,7 +174,80 @@ sealed class TrayApp : ApplicationContext, ISettingsHost
         else if (string.IsNullOrWhiteSpace(_cfg.Peer))
             Balloon("ShareKM is running", "Double-click the tray icon to pick the other computer.");
         _ = InitAutostart();
+        _ = UpdateLoop();
         if (showSettings) ShowSettings();
+    }
+
+    // ---- updates ----
+
+    Updater.Release? _update;
+    Version? _announced;
+    bool _checking, _installing, _upToDate;
+    int _updatePercent;
+    string? _updateError;
+
+    public string AppVersion => Updater.Current.ToString();
+    public UpdateInfo Updates => new(_update, _checking, _installing, _updatePercent, _upToDate, _updateError);
+
+    // Cleans up after the previous update, then checks quietly at start and once a day.
+    async Task UpdateLoop()
+    {
+        await Task.Delay(TimeSpan.FromSeconds(5));
+        Updater.CleanUp();
+        while (true)
+        {
+            await CheckForUpdates(quiet: true);
+            await Task.Delay(TimeSpan.FromHours(24));
+        }
+    }
+
+    // Quiet checks only announce a new version (once) and keep network errors to themselves.
+    public async Task CheckForUpdates(bool quiet = false)
+    {
+        if (_checking || _installing) return;
+        _checking = true;
+        _updateError = null;
+        UpdateUi();
+        try
+        {
+            var r = await Updater.Latest();
+            _update = r != null && r.Version > Updater.Current ? r : null;
+            _upToDate = _update == null;
+            if (_update != null && quiet && _announced != _update.Version)
+            {
+                _announced = _update.Version;
+                Balloon($"ShareKM {_update.Version} is available", "Click here or open Settings to update. Update both PCs.");
+            }
+        }
+        catch (Exception e)
+        {
+            if (!quiet) _updateError = "Could not check for updates: " + e.Message;
+        }
+        finally
+        {
+            _checking = false;
+            UpdateUi();
+        }
+    }
+
+    // Downloads the new exe, swaps it in and restarts at the same elevation. On failure this copy keeps running.
+    public async Task InstallUpdate()
+    {
+        if (_update is not { } r || _installing || _relaunching) return;
+        _installing = true;
+        _updatePercent = 0;
+        _updateError = null;
+        UpdateUi();
+        var progress = new Progress<double>(p => { _updatePercent = (int)(p * 100); _settings?.RefreshState(); });
+        var err = await Task.Run(() => Updater.Install(r, progress)) ?? Updater.StartNew();
+        if (err == null)
+        {
+            Quit(); // the new copy is waiting for our single-instance lock
+            return;
+        }
+        _installing = false;
+        _updateError = err;
+        UpdateUi();
     }
 
     // ---- administrator mode and startup ----

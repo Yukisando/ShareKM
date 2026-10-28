@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <AssemblyName>ShareKM</AssemblyName>
+    <RootNamespace>ShareKM</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <ApplicationIcon>Assets\ShareKM.ico</ApplicationIcon>
+
+    <Product>ShareKM</Product>
+    <AssemblyTitle>Share one keyboard and mouse between Windows PCs on your network</AssemblyTitle>
+    <Description>Share one keyboard and mouse between Windows PCs on your network</Description>
+    <Company>ShareKM contributors</Company>
+    <Authors>ShareKM contributors</Authors>
+    <Copyright>ShareKM contributors</Copyright>
+    <Version>1.0.0</Version>
+
+    <!-- No PDB, no local paths baked into the binary -->
+    <DebugType>none</DebugType>
+    <Deterministic>true</Deterministic>
+    <PathMap>$(MSBuildProjectDirectory)=/_/</PathMap>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\ShareKM.ico" LogicalName="ShareKM.ico" />
+  </ItemGroup>
+
+  <!-- dotnet publish -c Release -r win-x64 produces a single self-contained exe -->
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+  </PropertyGroup>
+
+</Project>

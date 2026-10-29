@@ -47,6 +47,9 @@ orange = this PC's keyboard and mouse go to the other PC, blue = the other PC is
   - if Windows has dropped ShareKM's keyboard hook, pressing the hotkey is noticed anyway: ShareKM
     reinstalls the hook and gives you this PC back. A dropped mouse hook is reinstalled too;
   - if the connection drops, forwarding stops at once.
+- Shortcuts with the Windows key go to the other PC too. ShareKM re-installs its keyboard hook each
+  time you switch, so apps started after it (PowerToys, Logi Options, ...) cannot catch them first.
+  Win+L and Ctrl+Alt+Del always stay on the PC they are pressed on (Windows does not let any app take them).
 - To change the hotkey, open Settings, press **Record** and then the key you want (Pause, F-keys,
   Insert, ...). Esc cancels. It applies at once. Ctrl, Shift, Alt and Windows keys can't be used.
 - Copy text on either PC and paste it on the other. This works whichever PC you are controlling.

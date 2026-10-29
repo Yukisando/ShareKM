@@ -506,6 +506,9 @@ sealed class TrayApp : ApplicationContext, ISettingsHost
 
     void StartForwarding()
     {
+        // Windows calls the newest low-level hook first. Apps started after ShareKM (PowerToys, Logi Options...)
+        // would otherwise see Win+ shortcuts first and act on them here; re-hooking puts ShareKM back in front.
+        InstallHooks();
         Native.GetCursorPos(out _lock);
         _forwarding = true;
         _mouseAt = Environment.TickCount64;

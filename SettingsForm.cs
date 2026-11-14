@@ -20,6 +20,9 @@ interface ISettingsHost
     SecurityState Security { get; }
     Task<string?> ApplyPassphrase(string text);
     void SetMouseRate(int hz);
+    bool FlashOnActive { get; }
+    bool ChimeOnActive { get; }
+    void SetActiveCues(bool flash, bool chime);
     bool IsElevated { get; }
     bool RunAsAdmin { get; }
     bool StartWithWindows { get; }
@@ -51,7 +54,8 @@ sealed class SettingsForm : Form
     readonly ModernButton _pause, _connect, _record, _copy, _show, _apply, _updateButton;
     readonly InputBox _pass = new();
     readonly Card _security = new();
-    readonly ToggleSwitch _admin = new() { AccessibleName = "Run as administrator" }, _startup = new() { AccessibleName = "Start with Windows" };
+    readonly ToggleSwitch _admin = new() { AccessibleName = "Run as administrator" }, _startup = new() { AccessibleName = "Start with Windows" },
+        _flash = new() { AccessibleName = "Glow around the screen" }, _chime = new() { AccessibleName = "Play a chime" };
     readonly Pill _adminStatus = new();
     readonly Label _startupHint;
     readonly ModernButton _elevate;
@@ -262,6 +266,26 @@ sealed class SettingsForm : Form
         perf.Controls.Add(rateHint, 0, 2);
         perf.Controls.Add(reset, 1, 2);
         Section(left, "Performance", perf);
+
+        // Which PC is active: a glow around this PC's screens and/or a chime from its speakers.
+        var cues = new Card();
+        var flashLabel = Lbl("Glow around the screen", Theme.Body, false, 0, Padding.Empty);
+        flashLabel.Anchor = AnchorStyles.Left;
+        _flash.Anchor = AnchorStyles.Right;
+        _flash.Margin = new Padding(8, 0, 0, 0);
+        var chimeLabel = Lbl("Play a chime", Theme.Body, false, 0, new Padding(0, 12, 0, 0));
+        chimeLabel.Anchor = AnchorStyles.Left;
+        _chime.Anchor = AnchorStyles.Right;
+        _chime.Margin = new Padding(8, 12, 0, 0);
+        _flash.CheckedChanged += (_, _) => _app.SetActiveCues(_flash.Checked, _chime.Checked);
+        _chime.CheckedChanged += (_, _) => _app.SetActiveCues(_flash.Checked, _chime.Checked);
+        cues.Controls.Add(flashLabel, 0, 0);
+        cues.Controls.Add(_flash, 1, 0);
+        cues.Controls.Add(chimeLabel, 0, 1);
+        cues.Controls.Add(_chime, 1, 1);
+        Span(cues, Lbl("When the keyboard and mouse switch to this PC, so you can see which one is active. " +
+            "Green: its own keyboard. Blue: the other PC's.", Theme.Caption, true, Inner, new Padding(0, 8, 0, 0)), 2);
+        Section(left, "When this PC becomes active", cues);
 
         _root.Controls.Add(left, 0, 1);
         _root.Controls.Add(right, 1, 1);
@@ -534,6 +558,8 @@ sealed class SettingsForm : Form
             : ("Not running as administrator", Color.Gray);
         _elevate.Visible = pending && !_app.Relaunching;
         _startup.SetSilently(_app.StartWithWindows);
+        _flash.SetSilently(_app.FlashOnActive);
+        _chime.SetSilently(_app.ChimeOnActive);
         _startupHint.Text = !_app.StartWithWindows ? "ShareKM is not started when you sign in."
             : _app.RunAsAdmin && _app.IsElevated ? "Starts as administrator when you sign in (scheduled task, no prompt)."
             : pending ? "Starts when you sign in, without administrator rights until you restart it as administrator."

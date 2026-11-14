@@ -16,6 +16,9 @@ sealed class Config
     [JsonIgnore] public string PlainPassphrase { get; set; } = "";
     // Run as administrator (opt-in). See Elevation.
     public bool RunAsAdmin { get; set; }
+    // Cues when this PC's screen becomes the one the keyboard and mouse drive. See ActiveCue.
+    public bool FlashOnActive { get; set; } = true;
+    public bool ChimeOnActive { get; set; } = true;
 
     public static readonly string FilePath = Environment.GetEnvironmentVariable("SHAREKM_CONFIG") is { Length: > 0 } f ? f
         : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ShareKM", "config.json");
@@ -52,9 +55,9 @@ sealed class Config
                     case "mouseratehz": c.MouseRateHz = MotionPump.Clamp(Int(v)); break;
                     case "passphraseprotected" when v.ValueKind == JsonValueKind.String: c.PassphraseProtected = v.GetString()!; break;
                     case "passphrase" when v.ValueKind == JsonValueKind.String: c.PlainPassphrase = v.GetString()!; break;
-                    case "runasadmin": c.RunAsAdmin = v.ValueKind == JsonValueKind.True
-                        || v.ValueKind == JsonValueKind.String && bool.TryParse(v.GetString(), out var b) && b
-                        || v.ValueKind == JsonValueKind.Number && Int(v) == 1; break;
+                    case "runasadmin": c.RunAsAdmin = Bool(v, c.RunAsAdmin); break;
+                    case "flashonactive": c.FlashOnActive = Bool(v, c.FlashOnActive); break;
+                    case "chimeonactive": c.ChimeOnActive = Bool(v, c.ChimeOnActive); break;
                 }
             }
         }
@@ -65,6 +68,15 @@ sealed class Config
     static int Int(JsonElement v) =>
         v.ValueKind == JsonValueKind.Number && v.TryGetDouble(out var d) && Math.Abs(d) < int.MaxValue ? (int)Math.Round(d)
         : v.ValueKind == JsonValueKind.String && int.TryParse(v.GetString(), out var i) ? i : 0;
+
+    static bool Bool(JsonElement v, bool fallback) => v.ValueKind switch
+    {
+        JsonValueKind.True => true,
+        JsonValueKind.False => false,
+        JsonValueKind.String when bool.TryParse(v.GetString(), out var b) => b,
+        JsonValueKind.Number => Int(v) != 0,
+        _ => fallback,
+    };
 
     public void Save()
     {
@@ -100,6 +112,7 @@ sealed class TrayApp : ApplicationContext, ISettingsHost
     readonly HashSet<(ushort vk, ushort scan, bool ext)> _keysDown = [];
     readonly HashSet<int> _buttonsDown = [];
     readonly MotionPump _motion;
+    readonly ActiveCue _cue = new();
     readonly System.Windows.Forms.Timer _saveLater = new() { Interval = 600 };
     IntPtr _kbHook, _mouseHook;
     Keys _hotkey;
@@ -381,7 +394,7 @@ sealed class TrayApp : ApplicationContext, ISettingsHost
         var p = Pairing.Normalize(text);
         if (p.Length > 0 && p.Length < Pairing.MinLength)
             return $"Use at least {Pairing.MinLength} characters (Generate makes a strong one).";
-        StopForwarding(false);
+        StopForwarding(false, cue: false);
         _passphrase = p;
         _cfg.PassphraseProtected = p.Length > 0 ? Pairing.Protect(p) : "";
         _cfg.Save();
@@ -428,6 +441,24 @@ sealed class TrayApp : ApplicationContext, ISettingsHost
 
     public int MouseRateHz => _motion.RateHz;
 
+    public bool FlashOnActive => _cfg.FlashOnActive;
+    public bool ChimeOnActive => _cfg.ChimeOnActive;
+
+    // Turning one on shows it once, so the choice can be judged right away.
+    public void SetActiveCues(bool flash, bool chime)
+    {
+        bool newFlash = flash && !_cfg.FlashOnActive, newChime = chime && !_cfg.ChimeOnActive;
+        _cfg.FlashOnActive = flash;
+        _cfg.ChimeOnActive = chime;
+        _cfg.Save();
+        if (newFlash || newChime) _cue.Show(LocalColor, newFlash, newChime);
+    }
+
+    static readonly Color LocalColor = Color.FromArgb(0x2E, 0xA8, 0x4A), RemoteColor = Color.DodgerBlue;
+
+    // This PC's screen is now the one being driven (by its own keyboard: green, by the other PC's: blue, like the tray).
+    void CueActive(bool remote) => _cue.Show(remote ? RemoteColor : LocalColor, _cfg.FlashOnActive, _cfg.ChimeOnActive);
+
     // Applies at once (the sender reads the rate every period); the file write is debounced while a slider drags.
     public void SetMouseRate(int hz)
     {
@@ -465,7 +496,7 @@ sealed class TrayApp : ApplicationContext, ISettingsHost
 
     public void Disconnect()
     {
-        StopForwarding(false);
+        StopForwarding(false, cue: false);
         _link.SetPaused(true);
         UpdateUi();
     }
@@ -519,7 +550,7 @@ sealed class TrayApp : ApplicationContext, ISettingsHost
         Balloon("Controlling the other computer", $"Press {KeyName(_hotkey)} on either keyboard to come back (or hold Esc 3 s).");
     }
 
-    void StopForwarding(bool notify)
+    void StopForwarding(bool notify, bool cue = true)
     {
         if (!_forwarding) return;
         _motion.Stop(); // sends any pending movement before the releases below
@@ -531,15 +562,17 @@ sealed class TrayApp : ApplicationContext, ISettingsHost
         _escSince = 0;
         _link.SendForwarding(false);
         UpdateUi();
+        if (cue) CueActive(remote: false);
         if (notify) Balloon("Controlling this computer", $"Press {KeyName(_hotkey)} to switch again.");
     }
 
     void OnRemoteControl(bool on)
     {
-        if (on) StopForwarding(false); // only one side controls at a time
+        if (on) StopForwarding(false, cue: false); // only one side controls at a time
         if (on == _remoteControlling) return;
         _remoteControlling = on;
         UpdateUi();
+        if (on) CueActive(remote: true);
         if (on) Balloon("Controlled by the other computer", $"Press {KeyName(_hotkey)} here to give control back.");
     }
 
@@ -825,7 +858,7 @@ sealed class TrayApp : ApplicationContext, ISettingsHost
 
     public void Quit()
     {
-        StopForwarding(false);
+        StopForwarding(false, cue: false);
         if (_remoteControlling) _link.SendRelease();
         _watchdog.Stop();
         if (_saveLater.Enabled) _cfg.Save();
@@ -835,6 +868,7 @@ sealed class TrayApp : ApplicationContext, ISettingsHost
         _kbHook = _mouseHook = IntPtr.Zero;
         _settings?.Close();
         _clipWindow.Dispose();
+        _cue.Dispose();
         _icon.Visible = false;
         _icon.Dispose();
         ExitThread();

@@ -52,6 +52,9 @@ orange = this PC's keyboard and mouse go to the other PC, blue = the other PC is
   Win+L and Ctrl+Alt+Del always stay on the PC they are pressed on (Windows does not let any app take them).
 - To change the hotkey, open Settings, press **Record** and then the key you want (Pause, F-keys,
   Insert, ...). Esc cancels. It applies at once. Ctrl, Shift, Alt and Windows keys can't be used.
+- **Which PC is active?** When the keyboard and mouse switch to a PC, its screen edges glow briefly
+  (green: its own keyboard, blue: the other PC's) and it plays a short chime. Turn either off in
+  Settings > When this PC becomes active.
 - Copy text on either PC and paste it on the other. This works whichever PC you are controlling.
 - **Mouse update rate** (Settings > Performance) sets how often pointer movement is sent to the
   other PC while you control it: 60 to 1000 Hz, default 200 Hz. Movement in between is added up

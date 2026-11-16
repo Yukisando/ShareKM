@@ -6,6 +6,9 @@ A tiny tray app that shares one keyboard and mouse between two Windows PCs on th
 plus clipboard text in both directions. Press one hotkey to switch which PC you control. No
 install, no account, no PowerToys: one `.exe`.
 
+> **Mac version coming soon.** A macOS version that works with the Windows one (control a Mac from a PC
+> and the other way around) is planned. It is not available yet.
+
 ## Download
 
 Get `ShareKM.exe` from the [latest release](https://github.com/Yukisando/ShareKM/releases/latest)

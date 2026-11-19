@@ -6,7 +6,7 @@ using System.Runtime.InteropServices;
 namespace ShareKM;
 
 // Shows which PC the keyboard and mouse just landed on: a soft glow that pulses twice around every screen of this PC,
-// and/or a short two-note chime. Both are click-through and never take focus, so typing carries on undisturbed.
+// and/or a soft low thud. Both are click-through and never take focus, so typing carries on undisturbed.
 sealed class ActiveCue : IDisposable
 {
     const int PulseMs = 1100, TickMs = 15;
@@ -143,25 +143,23 @@ sealed class ActiveCue : IDisposable
         [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr obj);
     }
 
-    // Two soft bell-like notes (A5 then E6), quiet, 0.55 s. Built in memory: no sound file to ship.
+    // One soft low thud: a sine that drops from ~170 Hz to ~85 Hz and dies out fast, 0.3 s, quiet.
+    // A touch of the octave above keeps it audible on small laptop speakers. Built in memory: no file to ship.
     static byte[] ChimeWav()
     {
         const int rate = 44100;
-        int n = rate * 55 / 100;
+        int n = rate * 30 / 100;
         var samples = new short[n];
-        (double freq, double start)[] notes = [(880.0, 0.0), (1318.51, 0.12)];
+        double phase = 0;
         for (int i = 0; i < n; i++)
         {
-            double t = i / (double)rate, v = 0;
-            foreach (var (freq, start) in notes)
-            {
-                double u = t - start;
-                if (u < 0) continue;
-                double env = Math.Min(1, u / 0.005) * Math.Exp(-u * 7);
-                v += env * (Math.Sin(2 * Math.PI * freq * u) + 0.25 * Math.Sin(4 * Math.PI * freq * u));
-            }
+            double t = i / (double)rate;
+            double freq = 85 + 85 * Math.Exp(-t * 30);
+            phase += 2 * Math.PI * freq / rate;
+            double env = Math.Min(1, t / 0.004) * Math.Exp(-t * 16);
+            double v = env * (Math.Sin(phase) + 0.3 * Math.Sin(2 * phase));
             double fadeOut = Math.Min(1, (n - i) / (rate * 0.02));
-            samples[i] = (short)(v * 0.16 * fadeOut * short.MaxValue);
+            samples[i] = (short)(v * 0.35 * fadeOut * short.MaxValue);
         }
         using var ms = new MemoryStream();
         using var w = new BinaryWriter(ms);

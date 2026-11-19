@@ -56,7 +56,7 @@ orange = this PC's keyboard and mouse go to the other PC, blue = the other PC is
 - To change the hotkey, open Settings, press **Record** and then the key you want (Pause, F-keys,
   Insert, ...). Esc cancels. It applies at once. Ctrl, Shift, Alt and Windows keys can't be used.
 - **Which PC is active?** When the keyboard and mouse switch to a PC, its screen edges glow briefly
-  (green: its own keyboard, blue: the other PC's) and it plays a short chime. Turn either off in
+  (green: its own keyboard, blue: the other PC's) and it plays a soft low sound. Turn either off in
   Settings > When this PC becomes active.
 - Copy text on either PC and paste it on the other. This works whichever PC you are controlling.
 - **Mouse update rate** (Settings > Performance) sets how often pointer movement is sent to the

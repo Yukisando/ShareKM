@@ -63,7 +63,8 @@ sealed class SettingsForm : Form
     readonly InputBox _address = new();
     readonly ModernSlider _rate = new() { Minimum = MotionPump.MinHz, Maximum = MotionPump.MaxHz, Step = 10, AccessibleName = "Mouse update rate" };
     readonly Panel _scroller = new() { Dock = DockStyle.Fill, AutoScroll = true };
-    readonly TableLayoutPanel _root;
+    readonly TableLayoutPanel _root, _advanced;
+    readonly LinkLabel _advancedToggle;
     readonly System.Windows.Forms.Timer _timer = new() { Interval = 1000 };
     readonly string _localIp;
     bool _recording, _applying, _confirming, _loaded;
@@ -178,7 +179,8 @@ sealed class SettingsForm : Form
         Section(right, "Security", _security, first: true);
 
 
-        var controls = new Card();
+        // General: the few settings most people touch. Everything else waits under Advanced.
+        var general = new Card();
         var hkLabel = Lbl("Switch hotkey", Theme.Body, false, 0, Padding.Empty);
         hkLabel.Anchor = AnchorStyles.Left;
         var hkRow = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false, Margin = Padding.Empty, Anchor = AnchorStyles.Right };
@@ -189,50 +191,19 @@ sealed class SettingsForm : Form
         _record = MakeButton("&Record", false, (_, _) => ToggleRecord());
         hkRow.Controls.Add(_hotkey);
         hkRow.Controls.Add(_record);
-        controls.Controls.Add(hkLabel, 0, 0);
-        controls.Controls.Add(hkRow, 1, 0);
-        Span(controls, Lbl("Press it on either keyboard to move control between the PCs. Holding Esc for 3 seconds always brings control back.",
+        general.Controls.Add(hkLabel, 0, 0);
+        general.Controls.Add(hkRow, 1, 0);
+        Span(general, Lbl("Moves control between the PCs. Holding Esc for 3 seconds always brings it back.",
             Theme.Caption, true, Inner, new Padding(0, 8, 0, 0)), 1);
-        // Run as administrator: Windows keeps normal programs away from elevated windows (UIPI), on both PCs.
-        var adminTitle = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false, Margin = new Padding(0, 16, 0, 0), Anchor = AnchorStyles.Left };
-        var shield = new PictureBox
-        {
-            Image = SystemIcons.GetStockIcon(StockIconId.Shield, StockIconOptions.SmallIcon).ToBitmap(),
-            SizeMode = PictureBoxSizeMode.Zoom, Size = new Size(16, 16), Margin = new Padding(0, 3, 8, 0),
-        };
-        var adminLabel = Lbl("Run as administrator", Theme.Body, false, 0, Padding.Empty);
-        adminTitle.Controls.Add(shield);
-        adminTitle.Controls.Add(adminLabel);
-        _admin.Anchor = AnchorStyles.Right;
-        _admin.Margin = new Padding(8, 16, 0, 0);
-        _admin.CheckedChanged += async (_, _) => await AdminToggled();
-        controls.Controls.Add(adminTitle, 0, 2);
-        controls.Controls.Add(_admin, 1, 2);
-        Span(controls, Lbl("Lets ShareKM control administrator windows (admin terminals, Task Manager). Windows asks once. " +
-            "Turn it on on both PCs. The UAC prompt, lock screen and Ctrl+Alt+Del stay out of reach.",
-            Theme.Caption, true, Inner, new Padding(0, 8, 0, 8)), 3);
-        _adminStatus.Font = Theme.Caption;
-        _adminStatus.MinimumSize = new Size(0, 24);
-        _adminStatus.Anchor = AnchorStyles.Left;
-        _elevate = MakeButton("Restart as a&dministrator", false, async (_, _) => await _app.RestartElevated());
-        _elevate.Anchor = AnchorStyles.Left;
-        _elevate.Margin = new Padding(12, 0, 0, 0);
-        _adminStatus.Margin = new Padding(0, 4, 0, 4);
-        var adminRow = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = true, Margin = Padding.Empty, MaximumSize = new Size(Inner, 0) };
-        adminRow.Controls.Add(_adminStatus);
-        adminRow.Controls.Add(_elevate);
-        Span(controls, adminRow, 4);
 
-        var startupLabel = Lbl("Start with Windows", Theme.Body, false, 0, new Padding(0, 16, 0, 0));
-        startupLabel.Anchor = AnchorStyles.Left;
-        _startup.Anchor = AnchorStyles.Right;
-        _startup.Margin = new Padding(8, 16, 0, 0);
         _startup.CheckedChanged += async (_, _) => { await _app.SetStartWithWindows(_startup.Checked); RefreshState(); };
-        controls.Controls.Add(startupLabel, 0, 5);
-        controls.Controls.Add(_startup, 1, 5);
-        _startupHint = Lbl("", Theme.Caption, true, Inner, new Padding(0, 8, 0, 0));
-        Span(controls, _startupHint, 6);
-        Section(right, "Controls", controls);
+        Span(general, ToggleRow("Start with Windows", _startup, 16), 2);
+        // Which PC is active: a glow around this PC's screens and/or a sound from its speakers.
+        _flash.CheckedChanged += (_, _) => _app.SetActiveCues(_flash.Checked, _chime.Checked);
+        _chime.CheckedChanged += (_, _) => _app.SetActiveCues(_flash.Checked, _chime.Checked);
+        Span(general, ToggleRow("Glow when switching here", _flash, 12), 3);
+        Span(general, ToggleRow("Sound when switching here", _chime, 12), 4);
+        Section(right, "General", general);
 
         var updates = new Card();
         var versionLabel = Lbl($"Version {_app.AppVersion}", Theme.Body, false, 0, Padding.Empty);
@@ -245,7 +216,46 @@ sealed class SettingsForm : Form
         updates.Controls.Add(_updateButton, 1, 0);
         _updateHint = Lbl("", Theme.Caption, true, Inner, new Padding(0, 8, 0, 0));
         Span(updates, _updateHint, 1);
-        Section(right, "Updates", updates);
+        Section(left, "Updates", updates);
+
+        // ---- advanced: hidden until asked for ----
+        var advLeft = Column();
+        advLeft.Margin = new Padding(0, 0, 16, 0);
+        var advRight = Column();
+
+        // Run as administrator: Windows keeps normal programs away from elevated windows (UIPI), on both PCs.
+        var admin = new Card();
+        var adminTitle = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false, Margin = Padding.Empty, Anchor = AnchorStyles.Left };
+        var shield = new PictureBox
+        {
+            Image = SystemIcons.GetStockIcon(StockIconId.Shield, StockIconOptions.SmallIcon).ToBitmap(),
+            SizeMode = PictureBoxSizeMode.Zoom, Size = new Size(16, 16), Margin = new Padding(0, 3, 8, 0),
+        };
+        var adminLabel = Lbl("Run as administrator", Theme.Body, false, 0, Padding.Empty);
+        adminTitle.Controls.Add(shield);
+        adminTitle.Controls.Add(adminLabel);
+        _admin.Anchor = AnchorStyles.Right;
+        _admin.Margin = new Padding(8, 0, 0, 0);
+        _admin.CheckedChanged += async (_, _) => await AdminToggled();
+        admin.Controls.Add(adminTitle, 0, 0);
+        admin.Controls.Add(_admin, 1, 0);
+        Span(admin, Lbl("Lets ShareKM control administrator windows (admin terminals, Task Manager). Windows asks once. " +
+            "Turn it on on both PCs. The UAC prompt, lock screen and Ctrl+Alt+Del stay out of reach.",
+            Theme.Caption, true, Inner, new Padding(0, 8, 0, 8)), 1);
+        _adminStatus.Font = Theme.Caption;
+        _adminStatus.MinimumSize = new Size(0, 24);
+        _adminStatus.Anchor = AnchorStyles.Left;
+        _elevate = MakeButton("Restart as a&dministrator", false, async (_, _) => await _app.RestartElevated());
+        _elevate.Anchor = AnchorStyles.Left;
+        _elevate.Margin = new Padding(12, 0, 0, 0);
+        _adminStatus.Margin = new Padding(0, 4, 0, 4);
+        var adminRow = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = true, Margin = Padding.Empty, MaximumSize = new Size(Inner, 0) };
+        adminRow.Controls.Add(_adminStatus);
+        adminRow.Controls.Add(_elevate);
+        Span(admin, adminRow, 2);
+        _startupHint = Lbl("", Theme.Caption, true, Inner, new Padding(0, 8, 0, 0));
+        Span(admin, _startupHint, 3);
+        Section(advLeft, "Administrator", admin, first: true);
 
         var perf = new Card();
         var rateLabel = Lbl("Mouse update rate", Theme.Body, false, 0, Padding.Empty);
@@ -265,30 +275,23 @@ sealed class SettingsForm : Form
         reset.LinkClicked += (_, _) => _rate.Value = MotionPump.DefaultHz;
         perf.Controls.Add(rateHint, 0, 2);
         perf.Controls.Add(reset, 1, 2);
-        Section(left, "Performance", perf);
+        Section(advRight, "Performance", perf, first: true);
 
-        // Which PC is active: a glow around this PC's screens and/or a chime from its speakers.
-        var cues = new Card();
-        var flashLabel = Lbl("Glow around the screen", Theme.Body, false, 0, Padding.Empty);
-        flashLabel.Anchor = AnchorStyles.Left;
-        _flash.Anchor = AnchorStyles.Right;
-        _flash.Margin = new Padding(8, 0, 0, 0);
-        var chimeLabel = Lbl("Play a chime", Theme.Body, false, 0, new Padding(0, 12, 0, 0));
-        chimeLabel.Anchor = AnchorStyles.Left;
-        _chime.Anchor = AnchorStyles.Right;
-        _chime.Margin = new Padding(8, 12, 0, 0);
-        _flash.CheckedChanged += (_, _) => _app.SetActiveCues(_flash.Checked, _chime.Checked);
-        _chime.CheckedChanged += (_, _) => _app.SetActiveCues(_flash.Checked, _chime.Checked);
-        cues.Controls.Add(flashLabel, 0, 0);
-        cues.Controls.Add(_flash, 1, 0);
-        cues.Controls.Add(chimeLabel, 0, 1);
-        cues.Controls.Add(_chime, 1, 1);
-        Span(cues, Lbl("When the keyboard and mouse switch to this PC, so you can see which one is active. " +
-            "Green: its own keyboard. Blue: the other PC's.", Theme.Caption, true, Inner, new Padding(0, 8, 0, 0)), 2);
-        Section(left, "When this PC becomes active", cues);
+        _advanced = new TableLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 2, Margin = Padding.Empty, Visible = false };
+        _advanced.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _advanced.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _advanced.Controls.Add(advLeft, 0, 0);
+        _advanced.Controls.Add(advRight, 1, 0);
+        _advancedToggle = new LinkLabel { AutoSize = true, Font = Theme.Body, Margin = new Padding(2, 20, 0, 0), LinkBehavior = LinkBehavior.HoverUnderline, TabStop = true };
+        _advancedToggle.LinkClicked += (_, _) => ShowAdvanced(!_advanced.Visible);
+        ShowAdvanced(_app.RunAsAdmin && !_app.IsElevated); // open when a restart as administrator is still waiting
 
         _root.Controls.Add(left, 0, 1);
         _root.Controls.Add(right, 1, 1);
+        _root.Controls.Add(_advancedToggle, 0, 2);
+        _root.SetColumnSpan(_advancedToggle, 2);
+        _root.Controls.Add(_advanced, 0, 3);
+        _root.SetColumnSpan(_advanced, 2);
         _root.SizeChanged += (_, _) => { if (_loaded) FitToContent(); }; // texts that grow or shrink later
         _scroller.Controls.Add(_root);
         Controls.Add(_scroller);
@@ -318,6 +321,21 @@ sealed class SettingsForm : Form
         card.MaximumSize = new Size(CardWidth, 0);
         card.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         column.Controls.Add(card);
+    }
+
+    // A label on the left and a switch on the right, across the whole card.
+    static TableLayoutPanel ToggleRow(string text, ToggleSwitch toggle, int top)
+    {
+        var row = new TableLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 2, Margin = new Padding(0, top, 0, 0), Anchor = AnchorStyles.Left | AnchorStyles.Right };
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        var label = Lbl(text, Theme.Body, false, 0, Padding.Empty);
+        label.Anchor = AnchorStyles.Left;
+        toggle.Anchor = AnchorStyles.Right;
+        toggle.Margin = new Padding(8, 0, 0, 0);
+        row.Controls.Add(label, 0, 0);
+        row.Controls.Add(toggle, 1, 0);
+        return row;
     }
 
     static void Span(Card card, Control c, int row)
@@ -421,6 +439,12 @@ sealed class SettingsForm : Form
     }
 
     // ---- behaviour ----
+
+    void ShowAdvanced(bool show)
+    {
+        _advanced.Visible = show;
+        _advancedToggle.Text = show ? "Hide advanced settings \u25B4" : "Advanced settings \u25BE";
+    }
 
     void ToggleRecord()
     {

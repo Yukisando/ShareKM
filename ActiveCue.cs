@@ -6,7 +6,7 @@ using System.Runtime.InteropServices;
 namespace ShareKM;
 
 // Shows which PC the keyboard and mouse just landed on: a soft glow that pulses twice around every screen of this PC,
-// and/or a soft low thud. Both are click-through and never take focus, so typing carries on undisturbed.
+// and/or three tiny low notes. Both are click-through and never take focus, so typing carries on undisturbed.
 sealed class ActiveCue : IDisposable
 {
     const int PulseMs = 1100, TickMs = 15;
@@ -143,23 +143,30 @@ sealed class ActiveCue : IDisposable
         [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr obj);
     }
 
-    // One soft low thud: a sine that drops from ~170 Hz to ~85 Hz and dies out fast, 0.3 s, quiet.
-    // A touch of the octave above keeps it audible on small laptop speakers. Built in memory: no file to ship.
+    // Three tiny soft notes stepping down (D4, B3, G3), about a quarter of a second, quiet. Built in memory: no file to ship.
+    // No sub-bass (small speakers distort on it), and every note fades in and out smoothly so nothing clicks.
+    // It starts with 80 ms of silence: speakers and USB audio that went to sleep wake up on that instead of
+    // chopping or popping the first note.
     static byte[] ChimeWav()
     {
         const int rate = 44100;
-        int n = rate * 30 / 100;
+        const double lead = 0.08;
+        (double freq, double start, double dur)[] notes = [(293.66, 0, 0.06), (246.94, 0.055, 0.06), (196.00, 0.11, 0.14)];
+        int n = (int)(rate * (lead + 0.11 + 0.14 + 0.01));
         var samples = new short[n];
-        double phase = 0;
-        for (int i = 0; i < n; i++)
+        foreach (var (freq, start, dur) in notes)
         {
-            double t = i / (double)rate;
-            double freq = 85 + 85 * Math.Exp(-t * 30);
-            phase += 2 * Math.PI * freq / rate;
-            double env = Math.Min(1, t / 0.004) * Math.Exp(-t * 16);
-            double v = env * (Math.Sin(phase) + 0.3 * Math.Sin(2 * phase));
-            double fadeOut = Math.Min(1, (n - i) / (rate * 0.02));
-            samples[i] = (short)(v * 0.35 * fadeOut * short.MaxValue);
+            int from = (int)(rate * (lead + start)), len = (int)(rate * dur);
+            for (int i = 0; i < len && from + i < n; i++)
+            {
+                double t = i / (double)rate;
+                double attack = t < 0.008 ? 0.5 - 0.5 * Math.Cos(Math.PI * t / 0.008) : 1;
+                double release = 0.5 + 0.5 * Math.Cos(Math.PI * i / len); // smooth all the way to zero at the note's end
+                double env = attack * release * Math.Exp(-t * 12);
+                double ph = 2 * Math.PI * freq * t;
+                double v = env * (Math.Sin(ph) + 0.15 * Math.Sin(2 * ph));
+                samples[from + i] = (short)Math.Clamp(samples[from + i] + v * 0.22 * short.MaxValue, short.MinValue, short.MaxValue);
+            }
         }
         using var ms = new MemoryStream();
         using var w = new BinaryWriter(ms);

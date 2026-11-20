@@ -57,23 +57,23 @@ orange = this PC's keyboard and mouse go to the other PC, blue = the other PC is
   Insert, ...). Esc cancels. It applies at once. Ctrl, Shift, Alt and Windows keys can't be used.
 - **Which PC is active?** When the keyboard and mouse switch to a PC, its screen edges glow briefly
   (green: its own keyboard, blue: the other PC's) and it plays a soft low sound. Turn either off in
-  Settings > When this PC becomes active.
+  Settings > General.
 - Copy text on either PC and paste it on the other. This works whichever PC you are controlling.
-- **Mouse update rate** (Settings > Performance) sets how often pointer movement is sent to the
+- **Mouse update rate** (Settings > Advanced settings > Performance) sets how often pointer movement is sent to the
   other PC while you control it: 60 to 1000 Hz, default 200 Hz. Movement in between is added up
   and sent in one message; clicks, wheel and keys always go out after the movement before them.
   Higher is smoother but uses more Wi-Fi and CPU. It only matters on the PC you are controlling
   from, and it applies at once.
 - **Disconnect** in Settings drops the link and stops this PC accepting it until you press
   **Connect** or restart ShareKM.
-- **Start with Windows** (tray menu, or Settings > Controls) starts ShareKM when you sign in.
+- **Start with Windows** (tray menu, or Settings > General) starts ShareKM when you sign in.
 
 ### Run as administrator
 
 Windows does not let a normal program see or type into windows that run as administrator (admin
 terminals, Task Manager, installers): while one of them is in front, ShareKM can neither read your
 keyboard and mouse there (on the PC you control from) nor type into it (on the other PC). Turn on
-**Run as administrator** in Settings > Controls **on both PCs** to fix this.
+**Run as administrator** in Settings > Advanced settings **on both PCs** to fix this.
 
 - Turning it on shows a warning first (see [Security](#security)): an elevated ShareKM lets anyone
   with your passphrase, or malware on a paired PC, type into admin windows. Use it only on a network

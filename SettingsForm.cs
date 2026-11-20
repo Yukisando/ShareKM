@@ -56,7 +56,7 @@ sealed class SettingsForm : Form
     readonly Card _security = new();
     readonly ToggleSwitch _admin = new() { AccessibleName = "Run as administrator" }, _startup = new() { AccessibleName = "Start with Windows" },
         _flash = new() { AccessibleName = "Glow around the screen" }, _chime = new() { AccessibleName = "Play a chime" };
-    readonly Pill _adminStatus = new();
+    readonly Pill _adminStatus = new(), _updateBadge = new();
     readonly Label _startupHint;
     readonly ModernButton _elevate;
     readonly PeerList _peers = new() { EmptyText = "Looking for other computers running ShareKM..." };
@@ -216,7 +216,6 @@ sealed class SettingsForm : Form
         updates.Controls.Add(_updateButton, 1, 0);
         _updateHint = Lbl("", Theme.Caption, true, Inner, new Padding(0, 8, 0, 0));
         Span(updates, _updateHint, 1);
-        Section(left, "Updates", updates);
 
         // ---- advanced: hidden until asked for ----
         var advLeft = Column();
@@ -276,20 +275,32 @@ sealed class SettingsForm : Form
         perf.Controls.Add(rateHint, 0, 2);
         perf.Controls.Add(reset, 1, 2);
         Section(advRight, "Performance", perf, first: true);
+        Section(advRight, "Updates", updates);
 
         _advanced = new TableLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 2, Margin = Padding.Empty, Visible = false };
         _advanced.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _advanced.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _advanced.Controls.Add(advLeft, 0, 0);
         _advanced.Controls.Add(advRight, 1, 0);
-        _advancedToggle = new LinkLabel { AutoSize = true, Font = Theme.Body, Margin = new Padding(2, 20, 0, 0), LinkBehavior = LinkBehavior.HoverUnderline, TabStop = true };
+        _advancedToggle = new LinkLabel { AutoSize = true, Font = Theme.Body, Margin = new Padding(0, 4, 0, 0), Anchor = AnchorStyles.Left, LinkBehavior = LinkBehavior.HoverUnderline, TabStop = true };
         _advancedToggle.LinkClicked += (_, _) => ShowAdvanced(!_advanced.Visible);
+        // Updates live under Advanced, so a new version shows up here, next to the link, while it is closed.
+        _updateBadge.Font = Theme.Caption;
+        _updateBadge.MinimumSize = new Size(0, 24);
+        _updateBadge.Anchor = AnchorStyles.Left;
+        _updateBadge.Margin = new Padding(12, 0, 0, 0);
+        _updateBadge.Cursor = Cursors.Hand;
+        _updateBadge.Visible = false;
+        _updateBadge.Click += (_, _) => ShowAdvanced(true);
+        var advRow = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false, Margin = new Padding(2, 16, 0, 0) };
+        advRow.Controls.Add(_advancedToggle);
+        advRow.Controls.Add(_updateBadge);
         ShowAdvanced(_app.RunAsAdmin && !_app.IsElevated); // open when a restart as administrator is still waiting
 
         _root.Controls.Add(left, 0, 1);
         _root.Controls.Add(right, 1, 1);
-        _root.Controls.Add(_advancedToggle, 0, 2);
-        _root.SetColumnSpan(_advancedToggle, 2);
+        _root.Controls.Add(advRow, 0, 2);
+        _root.SetColumnSpan(advRow, 2);
         _root.Controls.Add(_advanced, 0, 3);
         _root.SetColumnSpan(_advanced, 2);
         _root.SizeChanged += (_, _) => { if (_loaded) FitToContent(); }; // texts that grow or shrink later
@@ -407,6 +418,7 @@ sealed class SettingsForm : Form
         _loaded = true;
         FitToContent();
         _timer.Start();
+        if (_app.Updates.Available == null) _ = _app.CheckForUpdates(quiet: true); // fresh answer each time Settings opens
     }
 
     protected override void OnDpiChanged(DpiChangedEventArgs e)
@@ -444,6 +456,16 @@ sealed class SettingsForm : Form
     {
         _advanced.Visible = show;
         _advancedToggle.Text = show ? "Hide advanced settings \u25B4" : "Advanced settings \u25BE";
+        RefreshBadge();
+    }
+
+    void RefreshBadge()
+    {
+        var up = _app.Updates;
+        string? text = up.Installing ? $"Updating... {up.Percent}%" : up.Available is { } r ? $"Update available: {r.Version}" : null;
+        _updateBadge.Visible = text != null && !_advanced.Visible;
+        if (text != null && _updateBadge.Text != text) _updateBadge.Text = text;
+        _updateBadge.Dot = Theme.Current.Accent;
     }
 
     void ToggleRecord()
@@ -599,6 +621,7 @@ sealed class SettingsForm : Form
             : up.Available is { } a ? $"Version {a.Version} is out. ShareKM downloads it and restarts. Update both PCs."
             : up.UpToDate ? "You have the latest version."
             : "Updates come from the ShareKM releases on GitHub.");
+        RefreshBadge();
 
         var current = _app.Connected ? _app.PeerEndpoint : null;
         var items = _app.Peers.Select(p => new PeerItem(p.Id, p.Name, p.Address.ToString(), p.Address.ToString() == current)).ToList();

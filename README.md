@@ -95,8 +95,8 @@ underlined Alt shortcuts).
 
 ### Updates
 
-Settings > Updates shows your version. ShareKM checks GitHub for a newer release a few seconds after
-it starts and once a day, and shows a notification when there is one. **Check for updates** asks
+Settings > Advanced settings > Updates shows your version. ShareKM checks GitHub for a newer release a few seconds after
+it starts, once a day and each time Settings opens. A new version shows a notification and an **Update available** badge next to Advanced settings. **Check for updates** asks
 right away; **Update to x.y.z** downloads `ShareKM.exe` from the
 [latest release](https://github.com/Yukisando/ShareKM/releases/latest), checks its SHA-256 against
 the digest GitHub publishes, replaces the exe in place and restarts ShareKM (as administrator if
